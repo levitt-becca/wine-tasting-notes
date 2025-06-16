@@ -1,0 +1,419 @@
+"""
+Analysis of Regional and Varietal Signatures in Wine
+
+This analysis looks at a dataset of Wine Enthusiast Magazine reviews to uncover
+relationships between a wine's origin, variety, description, and perceived quality.
+
+Dataset: 49,999 randomly sampled reviews from Wine Enthusiast magazine
+Source: https://www.kaggle.com/datasets/zynicide/wine-reviews/data
+"""
+
+# Import libraries
+import pandas as pd
+import numpy as np
+import re
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+
+print("WINE ANALYSIS PROJECT")
+print("=" * 50)
+
+filepath = "\winemag-data-random-sample.csv"
+
+# =============================================================================
+# LOAD AND EXPLORE DATA
+# =============================================================================
+print("=== INITIAL DATA EXPLORATION ===")
+
+# Read in CSV
+wine = pd.read_csv(filepath)
+
+# Drop unnamed index column if it exists
+if 'Unnamed: 0' in wine.columns:
+    wine = wine.drop('Unnamed: 0', axis=1)
+
+print(f"Dimensions: {wine.shape}")
+print(f"\nFirst 5 rows:")
+print(wine.head())
+
+print(f"\nColumn names: {wine.columns.tolist()}")
+print(f"\nData types:\n{wine.dtypes}")
+print(f"\nNull values:\n{wine.isnull().sum()}")
+print(f"\nUnique values:\n{wine.nunique()}")
+print(f"\nNumerical description:\n{wine.describe()}")
+
+"""
+This data set includes a lot of information about each wine review: 
+the wines country of origin, review description, designation (the vineyard where the wine is from), 
+points (how Wine Enthusiast rates wine, out of 100 points), price per bottle, province, region (and potentially subregion), 
+taster name, taster Twitter handle, name of the wine, variety of grapes, and the winery. 
+
+While I'm not going to use all columns for analysis, the detail provided offers some interesting future areas of exploration.
+
+In exploring the data I noticed a large value of null values. 
+For some reviews this is due to lack of information for specific reviews, while for others it is because the value is irrelevant (for instance, some countries to not specify the subregion of wines). 
+I'll need to take this into account when cleaning up and analyzing the data.
+"""
+
+# =============================================================================
+# CLEAN DATA
+# =============================================================================
+print("\n=== DATA CLEANING ===")
+"""
+Now that I have a better understanding of the dataset contents and structure, 
+I modified the data set to improve the usability of the data and make it easier to analyze. 
+This included renaming some of the column names, filling in blank values as \"Unknown,\" and changing the object type of price to make it easier to perform operations.
+"""
+
+# Rename select columns
+wine = wine.rename(columns={
+    'region_1': 'region',
+    'region_2': 'subregion',
+    'taster_name': 'taster_name',
+    'taster_twitter_handle': 'taster_twitter'
+})
+
+# Fill in null values
+wine = wine.fillna("Unknown")
+
+# Change price values to numeric for future analysis
+wine['price'] = pd.to_numeric(wine['price'], errors='coerce')
+
+# Remove unknown values for country and variety
+wine = wine[wine['country'] != 'Unknown']
+wine = wine[wine['variety'] != 'Unknown']
+
+"""
+In my exploratory data analysis, I noticed that there were a number of wines that only had one review associated with the varietal or country.
+In order to better represent the data and identify patterns in country and varietal, I decided to only run analyses on varietals and countries with over 100 reviews. 
+I also removed any reviews with country or varietal as \"Unknown\" as they won't be relevant in my analysis. 
+That brought the number of rows down from 49,999 to 44,149.
+"""
+
+# Remove varieties with fewer than 100 reviews
+variety_counts = wine['variety'].value_counts()
+v_bool = wine['variety'].map(lambda x: variety_counts[x] >= 100)
+wine = wine[v_bool]
+
+# Remove countries with fewer than 100 reviews
+country_counts = wine['country'].value_counts()
+c_bool = wine['country'].map(lambda x: country_counts[x] >= 100)
+wine = wine[c_bool]
+
+print(f"After cleaning: {wine.shape}")
+
+# =============================================================================
+# CREATE DESCRIPTOR FEATURES
+# =============================================================================
+print("\n=== CREATING TASTING FEATURES ===")
+
+"""
+Given I am especially interested in patterns of the wine descriptions, I wanted to create a new column for tasting notes that highlights 
+common wine descriptors that appear in the reviews. To do this, I took the \"description\" column, removed the stopwords, 
+and took a look at the most common descriptor words to check my work. I then pulled a list of approximately 100 common wine tasting 
+notes (some without ending to account for different versions of the same word, like tannic and tannins), and if the description mentioned 
+one of those words it was added to the new \"tasting_notes\" column.
+"""
+
+# Define stopwords
+stopwords = [
+    'i', 'me', 'my', 'myself', 'we', 'our', 'ours','ourselves', 'you', "you're",
+    "you've", "you'll", "you'd", 'your', 'yours', 'yourself', 'yourselves', 'he',
+    'him', 'his', 'himself', 'she', "she's", 'her', 'hers', 'herself', 'it', "it's",
+    'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves', 'what', 'which',
+    'who', 'whom', 'this', 'that', "that'll", 'these', 'those', 'am', 'is', 'are',
+    'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do',
+    'does', 'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because',
+    'as', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against',
+    'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+    'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again',
+    'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all',
+    'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
+    'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't',
+    'can', 'will', 'just', 'don', "don't", 'should', "should've", 'now', 'd', 'll',
+    'm', 'o', 're', 've', 'y', 'ain', 'aren', "aren't", 'couldn', "couldn't", 'didn',
+    "didn't", 'doesn', "doesn't", 'hadn', "hadn't", 'hasn', "hasn't", 'haven',
+    "haven't", 'isn', "isn't", 'ma', 'mightn', "mightn't", 'mustn', "mustn't",
+    'needn', "needn't", 'shan', "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't",
+    'weren', "weren't", 'won', "won't", 'wouldn', "wouldn't"
+]
+
+# Process descriptor words
+def descriptor_words(text):
+    """Remove stopwords and punctuation from descriptions"""
+    text_lower = text.lower()
+    text_cleaned = re.sub(r'[^\w\s]', '', text_lower)
+    words = text_cleaned.split()
+    found_words = []
+
+    for word in words:
+        if word not in stopwords:
+            found_words.append(word)
+
+    return found_words
+
+# Create descriptor words column
+wine['descriptor_words'] = wine['description'].apply(descriptor_words)
+
+# Show most common descriptor words
+all_descriptors = [desc for sublist in wine['descriptor_words'].tolist() for desc in sublist]
+print('Most common words in descriptions:')
+for word, count in Counter(all_descriptors).most_common(25):
+    print(f"  {word}: {count}")
+
+# Define wine-specific descriptors
+wine_descriptors = [
+    "oak", "tann", "complex", "earth", "flo", "jam", "spic", "butter", "herb", "smok",
+    "vanilla", "chocolate", "mineral", "leather", "tobacco", "pepper", "citrus", "berr",
+    "plum", "strawberr", "peach", "cherr", "caramel", "nut", "grass", "veget", "honey",
+    "tropical", "stone", "peat", "barn", "blackcurrant", "toast", "cedar", "blackberr",
+    "bread", "mushroom", "melon", "raspberr", "apple", "licorice", "astringent", "balance",
+    "bold", "crisp", "delicate", "dry", "full", "light", "medium", "slate", "acid", "soft",
+    "structure", "round", "robust", "elegant", "supple", "lean", "rich", "viscous", "velvet",
+    "mature", "youth", "age", "approachable", "austere", "backward", "close", "develope",
+    "evolve", "fad", "layer", "nuance", "opulent", "refine", "rustic", "texture", "vibrant",
+    "concentrate", "fresh", "harmon", "long", "short", "linger", "clean", "bright", "live",
+    "silk", "smooth", "power", "integrate", "green", "expressive", "intense", "mellow",
+    "firm", "juic", "tight", "vigor", "warm", "zip", "brac", "savor", "lemon", "cream",
+    "yeast", "salt", "menthol"
+]
+
+# Find wine descriptors in text
+def find_descriptors(text):
+    """Find wine descriptors in text"""
+    text_lower = text.lower()
+    found_descriptors = []
+
+    for descriptor in wine_descriptors:
+        pattern = r'\b' + re.escape(descriptor) + r'[a-z]*\b'
+        if re.search(pattern, text_lower):
+            found_descriptors.append(descriptor)
+
+    return found_descriptors
+
+# Create tasting notes column
+wine['tasting_notes'] = wine['description'].apply(find_descriptors)
+
+# Show most common tasting notes
+all_notes = [desc for sublist in wine['tasting_notes'].tolist() for desc in sublist]
+print('\nMost common tasting notes:')
+for note, count in Counter(all_notes).most_common(25):
+    print(f"  {note}: {count}")
+
+# =============================================================================
+# ANALYZE BY COUNTRY
+# =============================================================================
+print("\n=== COUNTRY ANALYSIS ===")
+# Group by country and calculate statistics
+country_stats = wine.groupby('country').agg({
+    'points': ['mean', 'min', 'max', 'count'],
+    'price': ['mean', 'min', 'max']
+}).round(2)
+
+# Flatten column names
+country_stats.columns = ['_'.join(col).strip() for col in country_stats.columns]
+
+# Sort by average points (descending)
+country_stats_sorted = country_stats.sort_values('points_mean', ascending=False)
+
+print("Top 10 highest rated countries by average points:")
+print(country_stats_sorted[['points_mean', 'points_count', 'price_mean']].head(10))
+
+print("\nBottom 10 lowest rated countries by average points:")
+print(country_stats_sorted[['points_mean', 'points_count', 'price_mean']].tail(10))
+
+# =============================================================================
+# ANALYZE BY VARIETY
+# =============================================================================
+print("\n=== VARIETY ANALYSIS ===")
+
+# Group by variety and calculate statistics
+variety_stats = wine.groupby('variety').agg({
+    'points': ['mean', 'min', 'max', 'count'],
+    'price': ['mean', 'min', 'max']
+}).round(2)
+
+# Flatten column names
+variety_stats.columns = ['_'.join(col).strip() for col in variety_stats.columns]
+
+# Sort by average points (descending)
+variety_stats_sorted = variety_stats.sort_values('points_mean', ascending=False)
+
+print("Top 15 highest rated varieties by average points:")
+print(variety_stats_sorted[['points_mean', 'points_count', 'price_mean']].head(15))
+
+print("\nBottom 15 lowest rated varieties by average points:")
+print(variety_stats_sorted[['points_mean', 'points_count', 'price_mean']].tail(15))
+
+# =============================================================================
+# FIND VALUE WINES
+# =============================================================================
+print(f"\n=== VALUE ANALYSIS ===")
+min_points = 90
+max_price = 30
+print(f"Finding wines with {min_points}+ points and ≤${max_price}")
+
+# Filter for high-quality, affordable wines
+value_wines = wine[(wine['points'] >= min_points) & (wine['price'] <= max_price)]
+
+print(f"Found {len(value_wines)} value wines out of {len(wine)} total wines")
+print(f"That's {len(value_wines)/len(wine)*100:.1f}% of all wines")
+
+if len(value_wines) > 0:
+    print(f"\nValue wines by country:")
+    value_by_country = value_wines['country'].value_counts()
+    print(value_by_country.head(10))
+
+    print(f"\nValue wines by variety:")
+    value_by_variety = value_wines['variety'].value_counts()
+    print(value_by_variety.head(10))
+
+    print(f"\nSample value wines:")
+    sample_cols = ['title', 'country', 'variety', 'points', 'price']
+    print(value_wines[sample_cols].head(10))
+
+    # Calculate price-to-quality ratio for value wines
+    value_wines = value_wines.copy()
+    value_wines['quality_per_dollar'] = value_wines['points'] / value_wines['price']
+
+    print(f"\nBest quality per dollar:")
+    best_value_cols = ['title', 'country', 'variety', 'points', 'price', 'quality_per_dollar']
+    print(value_wines.nlargest(10, 'quality_per_dollar')[best_value_cols])
+
+# =============================================================================
+# CREATE VISUALIZATIONS
+# =============================================================================
+print("\n=== CREATING VISUALIZATIONS ===")
+
+# Set up the plotting style
+plt.style.use('default')
+fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+
+# 1. Points distribution
+axes[0, 0].hist(wine['points'], bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+axes[0, 0].set_title('Distribution of Wine Ratings (Points)')
+axes[0, 0].set_xlabel('Points')
+axes[0, 0].set_ylabel('Frequency')
+
+# 2. Price distribution (log scale due to wide range)
+wine_with_price = wine[wine['price'] != 'Unknown']
+axes[0, 1].hist(wine_with_price['price'], bins=50, alpha=0.7, color='lightcoral', edgecolor='black')
+axes[0, 1].set_title('Distribution of Wine Prices')
+axes[0, 1].set_xlabel('Price ($)')
+axes[0, 1].set_ylabel('Frequency')
+axes[0, 1].set_yscale('log')
+
+# 3. Top countries by count
+top_countries = wine['country'].value_counts().head(10)
+axes[1, 0].barh(range(len(top_countries)), top_countries.values, color='lightgreen')
+axes[1, 0].set_yticks(range(len(top_countries)))
+axes[1, 0].set_yticklabels(top_countries.index)
+axes[1, 0].set_title('Top 10 Countries by Number of Reviews')
+axes[1, 0].set_xlabel('Number of Reviews')
+
+# 4. Top varieties by count
+top_varieties = wine['variety'].value_counts().head(10)
+axes[1, 1].barh(range(len(top_varieties)), top_varieties.values, color='plum')
+axes[1, 1].set_yticks(range(len(top_varieties)))
+axes[1, 1].set_yticklabels(top_varieties.index)
+axes[1, 1].set_title('Top 10 Varieties by Number of Reviews')
+axes[1, 1].set_xlabel('Number of Reviews')
+
+plt.tight_layout()
+plt.show()
+
+# =============================================================================
+# ADDITIONAL WINE STATISTICS ANALYSIS
+# =============================================================================
+print("Before diving into some of my project questions, I wanted to gather some summary statistics to better understand what country and varietals were most and least favorably reviewed. I looked at common statistics including mean, minimum, maximum, and count (or number of reviews) for both points and price of the bottle.")
+
+# Aggregate price and points summary statistics based on country
+country_stats_alt = wine.groupby('country').agg({
+    'points': ['mean', 'min', 'max', 'count'],
+    'price': ['mean', 'min', 'max']
+})
+
+country_stats_alt = country_stats_alt.sort_values(('points', 'mean'), ascending=False)
+
+print('\nHighest rated countries on average:')
+print(country_stats_alt.head())
+print('\nLowest rated countries on average:')
+print(country_stats_alt.tail().iloc[::-1])
+
+# Aggregate price and points summary statistics based on varietal
+variety_stats_alt = wine.groupby('variety').agg({
+    'points': ['mean', 'min', 'max', 'count'],
+    'price': ['mean', 'min', 'max']
+})
+
+variety_stats_alt = variety_stats_alt.sort_values(by=('points', 'mean'), ascending=False)
+
+print('\nHighest rated varieties on average:')
+print(variety_stats_alt.head())
+print('\nLowest rated varieties on average:')
+print(variety_stats_alt.tail().iloc[::-1])
+
+# =============================================================================
+# DESCRIPTOR ANALYSIS
+# =============================================================================
+print("Part 4: Descriptor Analysis")
+print("\nNow that I have an idea of the highest and lowest rated countries and varieties I want to dive into the core of my analysis, which is identifying if there are any common characteristics in how certain varieties and countries are described. To start, I only kept the reviews with tasting notes (i.e. those that had descriptors that matched the 100 common descriptors above). Then I wanted to count of how frequently each tasting note appears in each country relative to the total number of reviews to see what tasting notes are most common by country. Finally I wanted to calculate a \"distinctiveness\" score to understand if there are any words that are used more common in one country vs. others.")
+
+# Keep only the rows that have tasting notes
+wine_filtered = wine[wine['tasting_notes'].str.len() > 0]
+
+# Give each tasting note its own line to make it easier to count
+wine_exp = wine_filtered.explode('tasting_notes')
+
+# Analyze notes by country
+group_field = 'country'
+top_n = 5
+
+# Calculate the tasting notes by country
+counts = wine_exp.groupby([group_field, 'tasting_notes']).size().reset_index(name='count')
+
+# Calculate the frequency of tasting notes in a country's reviews
+totals = wine_exp[group_field].value_counts()
+counts['total_reviews'] = counts[group_field].map(totals)
+counts['percentage'] = (counts['count'] / counts['total_reviews']) * 100
+
+# Calculate distinctiveness of country's tasting notes relative to other countries
+overall_freq = wine_exp['tasting_notes'].value_counts(normalize=True) * 100
+counts['overall_percentage'] = counts['tasting_notes'].map(overall_freq.to_dict())
+counts['distinctiveness'] = counts['percentage'] - counts['overall_percentage']
+
+country_notes = counts
+
+# Get top notes for each country
+top_country_notes = (country_notes.sort_values([group_field, 'count'], ascending=[True, False])
+                    .groupby(group_field)
+                    .apply(lambda x: ", ".join(x.nlargest(top_n, 'count')['tasting_notes']))
+                    .reset_index()
+                    .rename(columns={0: 'top_notes'}))
+
+print('\nTop tasting notes by country:')
+print(top_country_notes)
+
+# Plot most distinctive notes for select countries
+group_list = ['France', 'Italy', 'US', 'Spain', 'Portugal']  # Example countries
+
+plt.figure(figsize=(12, 10))
+for i, group_value in enumerate(group_list):
+    if group_value in country_notes[group_field].values:
+        group_data = (country_notes[country_notes[group_field] == group_value]
+                     .sort_values('distinctiveness', ascending=False)
+                     .head(top_n))
+        plt.subplot(len(group_list), 1, i+1)
+        sns.barplot(data=group_data, x='distinctiveness', y='tasting_notes')
+        plt.title(f'Most Distinctive Tasting Notes for {group_value}')
+        plt.xlabel('Distinctiveness Score (%)')
+        plt.tight_layout()
+
+plt.tight_layout(pad=3.0)
+plt.show()
+
+print("\n" + "=" * 50)
+print("ANALYSIS COMPLETE!")
+print(f"Final dataset shape: {wine.shape}")
+print(f"Value wines found: {len(value_wines) if 'value_wines' in locals() else 0}")
